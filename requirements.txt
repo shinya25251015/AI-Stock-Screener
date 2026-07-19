@@ -1,0 +1,2 @@
+anthropic>=0.100
+yfinance>=0.2
