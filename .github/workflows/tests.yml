@@ -1,0 +1,45 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Compile check
+        run: python -m py_compile screener/*.py
+
+      - name: Validate config YAML structure
+        run: |
+          python - <<'PY'
+          import sys, yaml
+          with open("config/cost_of_capital.yaml", encoding="utf-8") as fh:
+              data = yaml.safe_load(fh)
+          markets = data.get("markets") or {}
+          assert markets, "markets が空"
+          jp = markets.get("JP")
+          assert jp, "JP が定義されていない"
+          # 日本株の資本コストは Future100 scripts/market_data.py の REQUIRED_RETURN=0.08 と対。
+          assert jp.get("cost_of_equity_pct") == 8.0, "JPの資本コストは8.0%でなければならない"
+          assert jp.get("verified") is True and jp.get("asof"), "JPは検証済み＋確認日が必須"
+          for code, entry in markets.items():
+              if entry.get("verified"):
+                  assert entry.get("source"), f"{code}: verified なのに source が空"
+          print("config/cost_of_capital.yaml OK")
+          PY
+
+      - name: Run tests
+        run: python -m pytest -q
