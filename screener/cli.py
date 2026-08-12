@@ -19,6 +19,7 @@ import argparse
 import json
 import sys
 
+from . import candidates as candidates_mod
 from . import cost_of_capital, valuation, watchlist, yahoo_jp
 
 
@@ -142,6 +143,59 @@ def cmd_watchlist(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_candidates(args: argparse.Namespace) -> int:
+    """候補リスト（社名＋コードの仮説）を検証しつつ安さ足切りにかける。"""
+    clist = candidates_mod.load(args.path)
+    coe = cost_of_capital.resolve(args.market, override_pct=args.cost_of_equity)
+    stream = sys.stderr if args.json else sys.stdout
+    print(f"# {clist.title}（{clist.asof}）", file=stream)
+    print(f"# 候補 {len(clist.candidates)} 件 / {clist.source_note}".rstrip(), file=stream)
+    _print_header(coe, args.json)
+
+    results: list[valuation.ScreenResult] = []
+    known = set()
+    if args.exclude_known:
+        try:
+            known = watchlist.known_codes()
+        except FileNotFoundError:
+            print("# 既存コードの参照に失敗（Future100が見つからない）", file=stream)
+
+    for cand in clist.candidates:
+        if cand.code in known:
+            print(f"# skip {cand.code} {cand.name}: 既に監視/保有/リードに存在", file=stream)
+            continue
+        quote = yahoo_jp.fetch_quote(cand.resolved_ticker(), sleep_sec=args.sleep)
+        result = valuation.ScreenResult(
+            code=cand.code, name=cand.name, ticker=cand.resolved_ticker(),
+            market=coe.market, cost_of_equity_pct=coe.pct,
+        )
+        if quote.error:
+            result.error = quote.error
+            result.flags.append("要確認: 取得失敗が続く場合は上場状態と取引所を確認する")
+            results.append(result)
+            continue
+        # §8: コードは仮説。取得した社名と一致しなければ「未確認」として扱う。
+        if not candidates_mod.names_match(cand.name, quote.name):
+            result.error = (
+                f"社名不一致（仮説「{cand.name}」/ 取得「{quote.name}」）"
+                "＝証券コード未確認。config/へ記録してはいけない"
+            )
+            results.append(result)
+            continue
+        roe = valuation.RoeInput(
+            actual_pct=quote.roe_pct, forecast_pct=quote.forecast_roe_pct
+        )
+        screened = valuation.screen(
+            code=cand.code, name=quote.name, ticker=cand.resolved_ticker(),
+            market=coe.market, cost_of_equity_pct=coe.pct,
+            pbr=quote.pbr, roe=roe, market_cap_yen=quote.market_cap_yen,
+        )
+        results.append(screened)
+
+    _print_results(results, as_json=args.json)
+    return 0
+
+
 def cmd_leads(args: argparse.Namespace) -> int:
     wl = watchlist.load(args.path)
     print(f"# 未検証リード {len(wl.leads)} 件（理由はYAMLコメントから復元）\n")
@@ -177,6 +231,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--path", default=None, help="watchlist.yaml のパス")
     p_watch.add_argument("--refresh", action="store_true", help="実データを取得して比を洗い替える")
     p_watch.set_defaults(func=cmd_watchlist)
+
+    p_cand = sub.add_parser("candidates", parents=[common],
+                            help="候補リストのコードを検証しつつ足切り")
+    p_cand.add_argument("path", help="候補リストYAMLのパス")
+    p_cand.add_argument("--exclude-known", action="store_true",
+                        help="既に監視/保有/リードにあるコードを飛ばす")
+    p_cand.set_defaults(func=cmd_candidates)
 
     p_leads = sub.add_parser("leads", help="未検証リードと理由（YAMLコメント）を表示")
     p_leads.add_argument("--path", default=None, help="watchlist.yaml のパス")

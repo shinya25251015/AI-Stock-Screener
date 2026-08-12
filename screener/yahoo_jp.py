@@ -52,6 +52,9 @@ _HEADERS = {
 #: 1銘柄ごとの既定スリープ秒。連続アクセスでHTTP 500になるため短くしない。
 DEFAULT_SLEEP_SEC = 4.0
 DEFAULT_RETRIES = 3
+#: HTTP 5xx（＝レート制限）を踏んだときに、通常のリトライ間隔を何倍に伸ばすか。
+#: 短い間隔で叩き直すと制限が延びることを2026-08-12に実測した。
+RATE_LIMIT_BACKOFF_FACTOR = 5
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _UNIT_MAN = 10_000
@@ -228,6 +231,13 @@ def fetch_quote(
             body = _http_get(url, timeout=timeout)
         except urllib.error.HTTPError as exc:
             last_error = f"HTTP {exc.code}"
+            if exc.code >= 500:
+                # 500は「サイト障害」ではなくレート制限。短い間隔で叩き直すと
+                # 制限が延びるだけなので、通常のリトライより大きく待つ。
+                last_error = f"HTTP {exc.code}（レート制限の可能性）"
+                if attempt < retries - 1:
+                    time.sleep(sleep_sec * RATE_LIMIT_BACKOFF_FACTOR * (attempt + 1))
+                    continue
             if exc.code == 404:
                 # 404は上場廃止 or 取引所サフィックス誤りの可能性が高い。リトライしない。
                 return Quote(

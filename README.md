@@ -38,7 +38,10 @@ python -m screener.cli screen AAPL --market US        # 未検証市場はエラ
 python -m screener.cli watchlist
 python -m screener.cli watchlist --refresh --json > reports/screen_$(date +%F).json
 
-# 3) 未検証リードと「YAMLコメントに書かれた却下理由」を復元して表示
+# 3) 候補リスト（社名＋コードの仮説）を検証しつつ足切り
+python -m screener.cli candidates config/candidates_2026-08-12_axis6_uncovered.yaml --exclude-known
+
+# 4) 未検証リードと「YAMLコメントに書かれた却下理由」を復元して表示
 python -m screener.cli leads
 
 # テスト（ネットワーク不要）
@@ -57,6 +60,7 @@ Future100 リポジトリの場所は既定で `../Future100`。別の場所に�
 | `screener/cost_of_capital.py` | 市場ごとの株主資本コスト。未検証市場は `UnverifiedMarketError` で停止 |
 | `screener/yahoo_jp.py` | finance.yahoo.co.jp から株価/PBR/BPS/ROE/時価総額を取得。**例外を投げない** |
 | `screener/watchlist.py` | Future100 の `config/watchlist.yaml` を**コメント込み**で読む |
+| `screener/candidates.py` | 発掘候補リスト。**証券コードは仮説として扱い、取得社名と突合して検証**（§8） |
 | `screener/cli.py` | 上記を束ねるCLI |
 | `config/cost_of_capital.yaml` | 市場ごとの資本コストと**その根拠・確認日** |
 | `reports/` | 実行結果の記録（JSON） |
@@ -90,7 +94,13 @@ Future100側で東光高岳(6617)・ベイカレント(6532)の2回、同じ誤�
 **⑥ 自動取得値を鵜呑みにしない。** `verified_fundamentals.bvps_yen` があれば
 PBRを「その日の株価 ÷ BVPS」で毎回再計算する（Future100 `effective_pbr_roe()` と同じ契約）。
 
-**⑦ YAMLコメントを捨てない。** `leads_unverified` の却下理由はYAMLコメントとして
+**⑦ 証券コードは仮説として扱う。** 発掘の初期は「たぶん東鉄工業は1835」からしか始められない。
+`candidates` サブコマンドは取得ページの社名と突き合わせ、一致しなければ「コード未確認」として弾く。
+2026-08-12にこれが2件を検知した——名工建設(1869)は`.T`が404で**名証(`1869.N`)**、
+九電工(1959)は**コードが正しく社名のほうが古かった**（2025-10-01に「クラフティア」へ商号変更）。
+不一致は「コードが違う」だけでなく「こちらの社名が古い」でも起きる。
+
+**⑧ YAMLコメントを捨てない。** `leads_unverified` の却下理由はYAMLコメントとして
 書かれておりパーサでは読めない。`screener/watchlist.py` が生テキストも走査して
 「行末コメント＝個別理由」「直前のコメント塊＝節見出し」を復元する。
 
