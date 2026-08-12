@@ -1,0 +1,73 @@
+# 市場ごとの株主資本コスト（＝妥当PBRの分母）
+#
+# 妥当PBR = ROE ÷ 株主資本コスト（残余利益モデル）
+# 発見済み比 = 実PBR ÷ 妥当PBR
+#
+# 【§8 一次情報主義との関係】
+# 株主資本コストは「現地10年国債利回り ＋ ERP(5〜6%)」で決まる。10年国債利回りは
+# 時間とともに変わるため、**モデルの記憶で埋めてはいけない**。verified: false の市場は
+# 使用時に必ずWeb検索で当日の利回りを確認し、risk_free_pct / asof / source を埋めてから
+# verified: true にする。埋まっていない市場を指定すると screener はエラーを返し、
+# 黙って古い値で計算することはしない（cost_of_capital.py の UnverifiedMarketError）。
+#
+# 日本(JP)だけは 8% 固定。これはプロジェクト側で決め打ちされた定数であり
+# （日本10年国債≈2.7% ＋ ERP5〜6% の中心値）、Future100 の
+# scripts/market_data.py REQUIRED_RETURN=0.08 と一致させること。
+
+markets:
+  JP:
+    name: "日本"
+    cost_of_equity_pct: 8.0
+    verified: true
+    basis: "日本10年国債≈2.7% ＋ ERP5〜6% の中心値。プロジェクトの固定値"
+    asof: "2026-08-12"
+    source: >
+      Future100 docs/2035_Future_監視銘柄_引き継ぎ_2026-08-12.md §1、および
+      Future100 scripts/market_data.py の REQUIRED_RETURN = 0.08。
+    currency: "JPY"
+
+  # ---- 以下は未検証。使う日にWeb検索で当日値を確認してから埋めること ----
+  US:
+    name: "米国"
+    risk_free_pct: null   # 米10年国債利回り（当日値をWeb検索で確認して記入）
+    erp_pct: null         # 5.0〜6.0 のレンジで採用値と根拠を書く
+    verified: false
+    basis: ""
+    asof: ""
+    source: ""
+    currency: "USD"
+    note: >
+      米国は金利が高いぶん妥当PBRが下がる＝同じROEでも発見済み判定になりやすい。
+      SBI証券で買付可能か・NISA成長投資枠の対象か・ADRか現地上場かも併せて確認する
+      （Future100 docs/discovery_mission.md §1-6）。
+
+  EU:
+    name: "ユーロ圏"
+    risk_free_pct: null   # ドイツ10年国債(Bund)利回り等、採用した指標を source に明記
+    erp_pct: null
+    verified: false
+    basis: ""
+    asof: ""
+    source: ""
+    currency: "EUR"
+    note: "欧州個別株はSBIで買付できない場合が多い。実務条件を先に確認する。"
+
+  TW:
+    name: "台湾"
+    risk_free_pct: null
+    erp_pct: null
+    verified: false
+    basis: ""
+    asof: ""
+    source: ""
+    currency: "TWD"
+
+  KR:
+    name: "韓国"
+    risk_free_pct: null
+    erp_pct: null
+    verified: false
+    basis: ""
+    asof: ""
+    source: ""
+    currency: "KRW"
