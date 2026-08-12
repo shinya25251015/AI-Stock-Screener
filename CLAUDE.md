@@ -23,6 +23,7 @@ python -m screener.cli screen 3769.T 1414.T 6623.N     # ティッカー指定�
 python -m screener.cli screen AAPL --market US          # 未検証市場はエラーで止まる（§8）
 python -m screener.cli watchlist                        # Future100のwatchlistを一覧
 python -m screener.cli watchlist --refresh --json       # 実データで全件洗い替え
+python -m screener.cli candidates config/candidates_<日付>_<軸>.yaml --exclude-known  # 候補リストを検証＋足切り
 python -m screener.cli leads                            # 未検証リード＋YAMLコメントの却下理由
 
 # テスト（ネットワーク不要・モックとfixtureのみ）
@@ -90,6 +91,11 @@ screener/cli.py        ── 表 / JSON 出力 → reports/
   使う日にWeb検索で当日の10年国債利回りを確認し、`risk_free_pct`/`erp_pct`/`asof`/`source` を埋める。
 - **`fetch_quote()` は例外を投げない。** ネットワーク断・レート制限・構造変更はすべて
   `Quote.error` に文字列で入る。この契約を壊す変更をしない（Future100 `fetch_metrics()` と同じ）。
+- **証券コードを推測のまま記録しない。** 候補リストの `code` は仮説として書き、
+  `screener/candidates.py` の `names_match()` が取得社名と突合して検証する。
+  不一致は「コードが違う」だけでなく「**こちらの社名が古い**」でも起きる
+  （2026-08-12: 九電工1959は正しく、2025-10-01に「クラフティア」へ商号変更していた）。
+  **名証・札証・福証は `ticker` を明示する**（名工建設は `1869.N`。`.T` は404）。
 - **株価が取れないのを「api都合」で片付けない。** 404は上場廃止か取引所サフィックス誤りとして
   明示する。Future100で前澤工業(6489→上場廃止)・愛知電機(名証なので`6623.N`)の誤診の実例がある。
 - **株式分割の前後が混在する。** 異常な騰落率・PBR/BPSの不整合を見たらまず分割を疑う
