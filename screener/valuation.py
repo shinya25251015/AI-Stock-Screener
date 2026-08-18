@@ -31,6 +31,9 @@ PRE_IGNITION_RATIO_MAX = 1.0
 QUALITY_FLOOR_ROE_PCT = 6.0
 #: 会社予想ROEで引き直した比が実績比のこの倍率以上に悪化したら「山」フラグを立てる。
 PEAK_RISK_RATIO_MARGIN = 1.2
+#: 実効税率の既定値。特別損益を除いた正常化ROEを概算するときの税率
+#: （原本の「法人税等合計 ÷ 税金等調整前当期純利益」が取れるならそちらを渡すこと）。
+DEFAULT_EFFECTIVE_TAX_RATE = 0.30
 #: 主軸サイズ帯（円）。ハード足切りではないが、外れると別枠級＝バガー余地が小さい。
 SIZE_BAND_YEN = (10_000_000_000, 30_000_000_000)  # 100億〜300億
 
@@ -89,6 +92,11 @@ class RoeInput:
             ピーク益（"山"）の検算専用。
         caution: 正常化が必要な理由（一過性利益の内容など）。
         basis: 正常化ROEの算出根拠。
+        special_items_checked: **直近2期の特別損益を原本で確認したか**。
+            `normalized_pct` を出すには当然これが済んでいるが、
+            「確認した結果、特別損益が無かった＝実績ROEをそのまま使ってよい」
+            という**陰性の確認**も記録できるようにするためのフラグ。
+            False のままだと `screen()` が「未確認」フラグを立てる（下記）。
     """
 
     actual_pct: float | None = None
@@ -96,6 +104,7 @@ class RoeInput:
     forecast_pct: float | None = None
     caution: str = ""
     basis: str = ""
+    special_items_checked: bool = False
 
     def effective_pct(self) -> float | None:
         """比の計算に実際に使うROE。正常化値があればそれを優先する。"""
@@ -107,6 +116,70 @@ class RoeInput:
         if self.normalized_pct is not None:
             return "正常化ROE"
         return "実績ROE"
+
+
+def normalized_roe_from_special_items(
+    *,
+    pretax_income: float,
+    special_gains: float,
+    special_losses: float,
+    equity: float,
+    tax_total: float | None = None,
+    minority_interest: float = 0.0,
+    effective_tax_rate: float | None = None,
+) -> float:
+    """特別損益を除いた**正常化ROE（％）**を、決算短信原本の数値から算出する。
+
+    実績ROEが一過性の特別利益で嵩上げされている例が繰り返し出ているため、
+    その補正手順を関数に固定した。**確認済み4例**:
+
+    ==================  ==========  ============  ==========================================
+    銘柄                 実績ROE     正常化ROE      一過性の中身（原本）
+    ==================  ==========  ============  ==========================================
+    品川リフラ(5351)      26.6%       8%            資産売却益（割"高"に見せていた側の訂正）
+    日東紡(3110)         27.54%      11.28%        固定資産売却益
+    日本カーボン(5302)    9.08%       5.55%         投資有価証券売却益3,530百万円
+    大同信号(6743)       6.87%       5.93%         投資有価証券売却益379,498千円（2期連続）
+    ==================  ==========  ============  ==========================================
+
+    日本カーボン・大同信号は、この補正を入れて初めて**品質フロア割れ**が見える。
+    どちらも補正前は「発火前・フロア通過」に見えていた。
+
+    引数はすべて決算短信の連結損益計算書・貸借対照表の実額（単位は揃っていれば何でもよい）:
+
+    Args:
+        pretax_income: 税金等調整前当期純利益。
+        special_gains: 特別利益合計。
+        special_losses: 特別損失合計。
+        equity: 自己資本（純資産から非支配株主持分を除いた額）。
+            期首期末の平均が取れるならそちらが望ましい。
+        tax_total: 法人税等合計。渡すと実効税率を
+            ``tax_total / pretax_income`` で原本から算出する（推奨）。
+        minority_interest: 非支配株主に帰属する当期純利益。連結でのみ必要。
+        effective_tax_rate: 実効税率を直接指定する場合（0〜1）。
+            ``tax_total`` が渡されていればそちらが優先される。
+
+    Returns:
+        正常化ROE（％）。
+
+    Raises:
+        ValueError: 自己資本が0以下のとき。
+    """
+    if equity <= 0:
+        raise ValueError("自己資本が0以下では正常化ROEを定義できない")
+
+    if tax_total is not None and pretax_income:
+        rate = tax_total / pretax_income
+    elif effective_tax_rate is not None:
+        rate = effective_tax_rate
+    else:
+        rate = DEFAULT_EFFECTIVE_TAX_RATE
+    # 実効税率が異常値（税効果の戻し等で負・過大）になる期があるため上下を切る。
+    rate = min(max(rate, 0.0), 0.6)
+
+    normalized_pretax = pretax_income - (special_gains - special_losses)
+    normalized_net = normalized_pretax * (1 - rate) - minority_interest
+    return normalized_net / equity * 100
 
 
 @dataclass
@@ -130,6 +203,7 @@ class ScreenResult:
     size_label: str = ""
     flags: list[str] = field(default_factory=list)
     error: str = ""
+    special_items_unverified: bool = False
 
     @property
     def passed(self) -> bool:
@@ -137,10 +211,25 @@ class ScreenResult:
 
         「発見済み（比1.5以上）」または「品質フロア割れ」で不通過。中間帯は通過扱い
         （観察候補として残す）だが、発火前の安さは無い旨が verdict に出る。
+
+        **`special_items_unverified` は passed を落とさない**——落とすと
+        「未確認」と「本当に不合格」が区別できなくなるため。通過したうえで
+        `needs_primary_check` が立つ、という二段構えにしている。
         """
         if self.error or self.ratio is None or self.quality_floor_passed is None:
             return False
         return self.quality_floor_passed and self.verdict != VERDICT_DISCOVERED
+
+    @property
+    def needs_primary_check(self) -> bool:
+        """**①の原本確認に進む前に、実績ROEの裏取りが必要か。**
+
+        安さ足切りを通ったのに特別損益の確認が済んでいない銘柄は、
+        「発火前・フロア通過」に見えていても正常化で覆る可能性がある。
+        大同信号(6743)は**①の原本確認を終えてから**フロア割れが判明した——
+        この順序だと重い作業が無駄になるので、先にこちらを潰す。
+        """
+        return self.passed and self.special_items_unverified
 
 
 def screen(
@@ -201,6 +290,16 @@ def screen(
 
     if roe.normalized_pct is not None:
         result.flags.append(f"正常化ROEで判定（{roe.caution or '一過性・循環の補正'}）")
+    elif not roe.special_items_checked:
+        # 実績ROEをそのまま使っているのに、それが特別損益で嵩上げされていないかを
+        # 誰も確認していない状態。**黙って通さない**——これを黙って通した結果が
+        # 日本カーボン(5302)と大同信号(6743)で、どちらも補正すると品質フロア割れだった。
+        # 「想定内注記で覆い隠さない」のと同じ理由で、未確認は未確認として出す。
+        result.special_items_unverified = True
+        result.flags.append(
+            "実績ROEの特別損益チェック未実施——直近2期の特別利益を原本で確認すること"
+            "（確認済み4例すべてで正常化ROEが下振れ。うち2例はフロア割れ）"
+        )
 
     # 会社予想ROEでの検算＝ピーク益（"山"）の検出。合否には使わない。
     if roe.forecast_pct is not None and roe.forecast_pct > 0:
@@ -232,6 +331,12 @@ def roe_from_entry(entry: dict[str, Any], fetched_roe_pct: float | None = None) 
     actual = verified.get("roe_pct")
     if actual is None:
         actual = fetched_roe_pct
+    # `special_items_checked: true` を verified_fundamentals に書けば、
+    # 「原本を見た結果、特別損益は無かった（＝実績ROEをそのまま使ってよい）」という
+    # **陰性の確認**を記録できる。normalized_roe_pct がある銘柄は当然確認済み扱い。
+    checked = bool(verified.get("special_items_checked")) or (
+        entry.get("normalized_roe_pct") is not None
+    )
     return RoeInput(
         actual_pct=float(actual) if actual is not None else None,
         normalized_pct=(
@@ -239,6 +344,7 @@ def roe_from_entry(entry: dict[str, Any], fetched_roe_pct: float | None = None) 
         ),
         caution=str(entry.get("roe_caution") or "").strip(),
         basis=str(entry.get("normalized_roe_basis") or "").strip(),
+        special_items_checked=checked,
     )
 
 

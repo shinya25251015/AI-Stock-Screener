@@ -51,6 +51,8 @@ def _print_results(results: list[valuation.ScreenResult], as_json: bool = False)
                     "market_cap_yen": r.market_cap_yen,
                     "quality_floor_passed": r.quality_floor_passed,
                     "passed": r.passed,
+                    "special_items_unverified": r.special_items_unverified,
+                    "needs_primary_check": r.needs_primary_check,
                     "flags": r.flags,
                     "error": r.error,
                 }
@@ -74,6 +76,19 @@ def _print_results(results: list[valuation.ScreenResult], as_json: bool = False)
             print(f"    ! {flag}")
         if r.error:
             print(f"    x {r.error}")
+
+    # 安さ・品質を通ったが実績ROEの裏取りが済んでいない銘柄を最後にまとめて出す。
+    # ①の原本確認は重い作業なので、**その前に**ここを潰すのが正しい順序。
+    # 大同信号(6743)は①を確認し終えてから品質フロア割れが判明した。
+    pending = [r for r in results if r.needs_primary_check]
+    if pending:
+        print()
+        print("★ ①の原本確認より先に、実績ROEの特別損益を確認すべき銘柄:")
+        for r in pending:
+            print(f"    - {r.code} {r.name}（比{_fmt(r.ratio)}・{r.verdict}）")
+        print("      確認済み4例（品川リフラ/日東紡/日本カーボン/大同信号）はすべて正常化で下振れし、")
+        print("      うち日本カーボン・大同信号は品質フロア割れだった。")
+        print("      正常化は screener.valuation.normalized_roe_from_special_items() で計算できる。")
 
 
 def _screen_ticker(ticker: str, coe: cost_of_capital.CostOfEquity, entry: dict | None,

@@ -131,3 +131,101 @@ def test_normalized_entry_round_trip():
     assert roe.effective_pct() == 11.4
     assert roe.effective_source() == "正常化ROE"
     assert "一過性" in roe.caution
+
+
+# ---------------------------------------------------------------------------
+# 特別損益による実績ROEの嵩上げ（2026-08-18追加）
+#
+# 大同信号(6743)で、①の原本確認を終えてから品質フロア割れが判明した。
+# 実績ROE6.87%は投資有価証券売却益による嵩上げで、正常化すると5.93%だった。
+# 同型は日本カーボン(5302)でも起きており、どちらも補正前は「発火前・フロア通過」に
+# 見えていた。以下は原本の実額での回帰テスト。
+# ---------------------------------------------------------------------------
+
+
+def test_normalized_roe_nippon_carbon_falls_below_quality_floor():
+    """日本カーボン(5302) 25/12期決算短信原本（2026-02-10開示）の実額。
+
+    特別利益3,530（全額 投資有価証券売却益）・特別損失803（火災損失）。
+    実績ROEは原本記載の9.1%だが、一過性を除くと5.55%でフロア割れ。
+    """
+    normalized = valuation.normalized_roe_from_special_items(
+        pretax_income=7829,
+        special_gains=3530,
+        special_losses=803,
+        tax_total=2441,
+        minority_interest=557,
+        equity=(52014 + 54393) / 2,  # 24/12期末と25/12期末の平均
+    )
+    assert 5.4 < normalized < 5.7
+    assert normalized < valuation.QUALITY_FLOOR_ROE_PCT
+    # 補正前の実績9.08%はフロアを通ってしまう＝これが見落としの正体
+    assert 9.08 > valuation.QUALITY_FLOOR_ROE_PCT
+
+
+def test_screen_flags_unverified_special_items_on_otherwise_passing_stock():
+    """安さ・品質を通っていても、特別損益が未確認なら未確認として出す。
+
+    大同信号(6743)の補正前の姿（PBR0.62／実績ROE6.87%／比0.72）。
+    「発火前・フロア通過」で passed になるが、needs_primary_check が立つ。
+    """
+    result = valuation.screen(
+        code="6743",
+        name="大同信号",
+        ticker="6743.T",
+        market="東証S",
+        cost_of_equity_pct=8.0,
+        pbr=0.62,
+        roe=valuation.RoeInput(actual_pct=6.87),
+        market_cap_yen=19_300_000_000,
+    )
+    assert result.verdict == valuation.VERDICT_PRE_IGNITION
+    assert result.quality_floor_passed is True
+    assert result.passed is True
+    # 通ってはいるが、①の原本確認へ進む前に潰すべき宿題が残っている
+    assert result.special_items_unverified is True
+    assert result.needs_primary_check is True
+    assert any("特別損益チェック未実施" in f for f in result.flags)
+
+
+def test_screen_does_not_flag_when_special_items_confirmed_absent():
+    """陰性の確認（原本を見た結果、特別損益が無かった）は未確認扱いにしない。"""
+    result = valuation.screen(
+        code="9999",
+        name="テスト",
+        ticker="9999.T",
+        market="東証P",
+        cost_of_equity_pct=8.0,
+        pbr=0.9,
+        roe=valuation.RoeInput(actual_pct=10.0, special_items_checked=True),
+    )
+    assert result.passed is True
+    assert result.special_items_unverified is False
+    assert result.needs_primary_check is False
+    assert not any("特別損益チェック未実施" in f for f in result.flags)
+
+
+def test_screen_with_normalized_roe_is_never_unverified():
+    """正常化ROEがある＝すでに原本を見ているので、未確認フラグは立たない。"""
+    result = valuation.screen(
+        code="5302",
+        name="日本カーボン",
+        ticker="5302.T",
+        market="東証P",
+        cost_of_equity_pct=8.0,
+        pbr=0.99,
+        roe=valuation.RoeInput(
+            actual_pct=9.08, normalized_pct=5.55, caution="投資有価証券売却益"
+        ),
+    )
+    assert result.special_items_unverified is False
+    assert result.quality_floor_passed is False  # 正常化5.55%でフロア割れ
+    assert result.passed is False
+
+
+def test_roe_from_entry_reads_special_items_checked_flag():
+    entry = {"verified_fundamentals": {"roe_pct": 12.0, "special_items_checked": True}}
+    assert valuation.roe_from_entry(entry).special_items_checked is True
+    assert valuation.roe_from_entry({"verified_fundamentals": {"roe_pct": 12.0}}).special_items_checked is False
+    # normalized_roe_pct があれば当然確認済み
+    assert valuation.roe_from_entry({"normalized_roe_pct": 8.0}).special_items_checked is True
