@@ -44,6 +44,9 @@ python -m screener.cli candidates config/candidates_2026-08-12_axis6_uncovered.y
 # 4) 未検証リードと「YAMLコメントに書かれた却下理由」を復元して表示
 python -m screener.cli leads
 
+# 5) ①の原本確認に進む前に、実績ROEの特別損益＋実効税率を原本で潰す
+python -m screener.cli special-items 1815 1799 1869.N
+
 # テスト（ネットワーク不要）
 pip install -r requirements-dev.txt
 python -m pytest -q
@@ -61,6 +64,7 @@ Future100 リポジトリの場所は既定で `../Future100`。別の場所に�
 | `screener/yahoo_jp.py` | finance.yahoo.co.jp から株価/PBR/BPS/ROE/時価総額を取得。**例外を投げない** |
 | `screener/watchlist.py` | Future100 の `config/watchlist.yaml` を**コメント込み**で読む |
 | `screener/candidates.py` | 発掘候補リスト。**証券コードは仮説として扱い、取得社名と突合して検証**（§8） |
+| `screener/disclosure.py` | **決算短信の原本**へ到達し、特別損益・実効税率を拾って正常化ROEを出す |
 | `screener/cli.py` | 上記を束ねるCLI |
 | `config/cost_of_capital.yaml` | 市場ごとの資本コストと**その根拠・確認日** |
 | `reports/` | 実行結果の記録（JSON） |
@@ -78,6 +82,19 @@ Future100側で東光高岳(6617)・ベイカレント(6532)の2回、同じ誤�
 
 - 割高に見せる例＝品川リフラ(5351): 資産売却益込み実績26.6% → 正常化8%で比0.49→0.89
 - 割安に見せる例＝日東紡(3110): 売却益込み実績27.54% → 正常化11.4%で比0.80→2.04
+
+**②-b 嵩上げは特別損益欄の外でも起きる＝税。** フィックスターズ(3687)は
+「前年同期に子会社の清算に伴う税金負担軽減があった」（原本）で実効税率19.9%→31.3%。
+`valuation.TaxRateCheck` が**原本2期ぶんの実効税率**を比べ、当期が5pt以上低ければ
+`roe_at_tax_rate()` で保守側（高いほうの税率）に引き直す。
+**法定実効税率を記憶で置かない**——原本から取れる実績だけで判断する（§8）。
+2026-08-21のF-4再検証で初適用し、さくらインターネット(3778)の当期実効税率3.90%を検出した。
+
+**②-c 原本へのルートは2本要る。** `disclosure.py` は開示一覧を
+Yahoo（`quote/<t>/disclosure`・**直近1年**）と kabupro（`ke.kabupro.jp`・**数年ぶん**）の
+両方から引く。2026-08-21のF-4再検証では9社中4社（3月期・9月期・10月期の本決算）が
+Yahoo側では期限切れで届かず、kabupro側で取れた。**片方だけでは半分に届かない。**
+kabupro は cp932・`href` が引用符なし・httpsは証明書のホスト名不一致でhttpのみ、という3つの癖がある。
 
 **③ 海外の資本コストを記憶で埋めない。** 10年国債利回りは時間とともに変わる。
 `config/cost_of_capital.yaml` の `verified: false` な市場を指定すると例外で止まり、

@@ -25,6 +25,7 @@ python -m screener.cli watchlist                        # Future100のwatchlist�
 python -m screener.cli watchlist --refresh --json       # 実データで全件洗い替え
 python -m screener.cli candidates config/candidates_<日付>_<軸>.yaml --exclude-known  # 候補リストを検証＋足切り
 python -m screener.cli leads                            # 未検証リード＋YAMLコメントの却下理由
+python -m screener.cli special-items 1815 1799          # 本決算短信の原本→特別損益＋実効税率→正常化ROE
 
 # テスト（ネットワーク不要・モックとfixtureのみ）
 pip install -r requirements-dev.txt
@@ -90,6 +91,15 @@ screener/cli.py        ── 表 / JSON 出力 → reports/
   「山」（循環ピーク）の検算にのみ使う。合否は変えない。
 - **一過性ROEの歪みは両方向に効く。** `normalized_pct` を渡すとそちらで比を計算する。
   品川リフラ＝割高に見せる／日東紡＝割安に見せる。`tests/test_valuation.py` に両方の実例がある。
+- **嵩上げは特別損益欄の外にもある＝税。** `valuation.TaxRateCheck` が原本2期ぶんの
+  実効税率（法人税等合計÷税金等調整前当期純利益）を比べ、当期が5pt以上低ければ
+  `roe_at_tax_rate()` で保守側の税率に引き直す（フィックスターズ3687型・引き継ぎ書§3パターン2）。
+  **法定実効税率を記憶で置かない。** 原本から取れる2期ぶんの実績だけで判断する（§8）。
+- **どのROEを分母に採るかは保守側（比が最大になるもの）。** 実績／正常化／会社予想／会社の
+  中期目標ROEで比が倍近く違う。帯をまたぐときは必ず保守側を採る（2026-08-21に固定されたルール）。
+- **原本へのルートは2本持つ。** `disclosure.py` は Yahoo の開示一覧（直近1年）と
+  kabupro（数年ぶん）の両方から引く。3月期・9月期・10月期の**本決算はYahoo側では期限切れで
+  落ちる**（2026-08-21のF-4再検証で9社中4社がこれに該当）。
 - **海外の株主資本コストを記憶で埋めない。** `config/cost_of_capital.yaml` の
   `verified: false` な市場は `UnverifiedMarketError` で計算を止める。この例外を握りつぶす変更をしない。
   使う日にWeb検索で当日の10年国債利回りを確認し、`risk_free_pct`/`erp_pct`/`asof`/`source` を埋める。
@@ -141,6 +151,10 @@ screener/cli.py        ── 表 / JSON 出力 → reports/
 - `tests/test_yahoo_jp.py` — `tests/fixtures/quote_3769_trimmed.html`（2026-08-12実取得）に対する
   パース。**ページ構造が変わるとここが落ちる**＝構造変更に気づける仕掛け。落ちたらセレクタを直す。
 - `tests/test_watchlist.py` — YAMLコメントからの却下理由の復元。
+- `tests/test_disclosure.py` — 開示一覧のパース（Yahoo/kabupro）と短信からの特別損益抽出。
+  fixture は2026-08-21の実取得。**本文の「税金等調整前当期純利益による22,572百万円及び…」を
+  表と取り違えない**・**（参考）自己資本の単位（百万円）を表の単位（千円）へ換算する**という
+  2つの実際に踏んだ罠を回帰テストで固定している。
 - 新しい判定ロジックを追加したら対応するテストを追加する。
 
 ## 既知の制約・注意点
@@ -156,7 +170,12 @@ screener/cli.py        ── 表 / JSON 出力 → reports/
 - **適時開示の探し方**: TDnetの日付別一覧
   `https://www.release.tdnet.info/inbs/I_list_0<NN>_<YYYYMMDD>.html`（**UTF-8**。ページ番号は
   01から。銘柄名でgrepする）→ PDFは `https://www.release.tdnet.info/inbs/<id>.pdf`。
-  `ke.kabupro.jp` は本セッションでは空を返した。kabutan / minkabu / irbank / stooq は403。
+  kabutan / minkabu / irbank / stooq は403。
+- **`ke.kabupro.jp` は使える（2026-08-21に確立・以前の「空を返す」は誤り）**。
+  `http://ke.kabupro.jp/code/<code>.htm`（**https不可**＝証明書のホスト名不一致、**cp932**、
+  `href` が**引用符なし**）。`<tr>` 行に「短信/四半期」の種別・書類名・日付・PDFリンクが並ぶ。
+  **数年ぶん遡れる**ので、Yahooの開示一覧（直近1年）で落ちる本決算はここから取る。
+  実装は `screener/disclosure.py`。
 - **Yahoo!の企業IRサイト経由が403のときは、Yahoo!ファイナンスの開示ミラー**
   `https://finance-frontend-pc-dist.west.edge.storage-yahoo.jp/disclosure/<YYYYMMDD>/<id>.pdf` が使える。
 - 企業サイトのIRライブラリはJS描画で、curl/WebFetchではPDFリンクが取れないことが多い

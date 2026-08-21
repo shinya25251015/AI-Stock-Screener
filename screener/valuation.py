@@ -182,6 +182,93 @@ def normalized_roe_from_special_items(
     return normalized_net / equity * 100
 
 
+#: 実効税率が前期からこれ以上（ポイント）下がっていたら「税で嵩上げ」を疑う。
+TAX_RATE_ANOMALY_PT = 5.0
+
+
+@dataclass
+class TaxRateCheck:
+    """実効税率の前年比較。**特別損益欄だけでは検出できない嵩上げ**を拾う。
+
+    2026-08-21、フィックスターズ(3687)で見つかった型。26/9期3Q補足説明資料の原本に
+    「前年同期に子会社の清算に伴う税金負担軽減があった」と明記されており、実効税率は
+    **19.9%（25/9期3Q）→ 31.3%（26/9期3Q）**。つまり**前期のROEが税で嵩上げ**されていた。
+    正常税率で引き直すと 25/9期のROEは 25.98% → 約22.2%相当（比 2.38 → 2.79）。
+
+    特別損益は損益計算書の特別損益欄に出るが、**税負担の軽減はそこに出ない**。
+    `normalized_roe_from_special_items()` だけでは素通りする。
+    """
+
+    current_pct: float | None = None
+    previous_pct: float | None = None
+
+    @property
+    def delta_pt(self) -> float | None:
+        if self.current_pct is None or self.previous_pct is None:
+            return None
+        return self.current_pct - self.previous_pct
+
+    @property
+    def anomalous(self) -> bool:
+        """当期の実効税率が**前期より大きく低い**か（＝当期のROEが税で嵩上げ）。"""
+        delta = self.delta_pt
+        return delta is not None and delta <= -TAX_RATE_ANOMALY_PT
+
+    @property
+    def conservative_pct(self) -> float | None:
+        """保守側（高いほう）の実効税率。
+
+        `Future100/docs/2035_Future_監視銘柄_引き継ぎ_2026-08-21.md` §1 の
+        「帯をまたぐ場合は保守側（比が大きくなるほう）を採る」を税率にも適用する。
+        **法定実効税率を記憶で置かない**——原本から取れる2期ぶんの実績だけで判断する（§8）。
+        """
+        rates = [r for r in (self.current_pct, self.previous_pct) if r is not None]
+        return max(rates) if rates else None
+
+    def describe(self) -> str:
+        if self.delta_pt is None:
+            return "実効税率: 前期比較ができない（2期ぶんの実額が要る）"
+        verdict = "★税で嵩上げの疑い" if self.anomalous else "正常"
+        return (
+            f"実効税率: 前期{self.previous_pct:.1f}% → 当期{self.current_pct:.1f}%"
+            f"（{self.delta_pt:+.1f}pt・{verdict}）"
+        )
+
+
+def effective_tax_rate_pct(pretax_income: float | None, tax_total: float | None) -> float | None:
+    """原本の「法人税等合計 ÷ 税金等調整前当期純利益」を％で返す。
+
+    税前が0以下の期は率の意味が壊れる（欠損・税効果の戻し）ので None を返す——
+    **推測で埋めない。**
+    """
+    if not pretax_income or tax_total is None or pretax_income <= 0:
+        return None
+    return tax_total / pretax_income * 100
+
+
+def roe_at_tax_rate(
+    *,
+    pretax_income: float,
+    equity: float,
+    tax_rate_pct: float,
+    special_gains: float = 0.0,
+    special_losses: float = 0.0,
+    minority_interest: float = 0.0,
+) -> float:
+    """指定した実効税率で引き直したROE（％）。
+
+    `TaxRateCheck.conservative_pct` を渡せば「税の軽減が無かったらROEはいくつだったか」が出る。
+    `special_gains` / `special_losses` を渡せば特別損益の正常化と同時に効く
+    （フィックスターズは同じ期に本社移転費用229百万円＝**押し下げ側**の特別損失も計上しており、
+    両方向を同時に扱えないと実態からずれる）。
+    """
+    if equity <= 0:
+        raise ValueError("自己資本が0以下では正常化ROEを定義できない")
+    rate = min(max(tax_rate_pct / 100, 0.0), 0.6)
+    normalized_pretax = pretax_income - (special_gains - special_losses)
+    return (normalized_pretax * (1 - rate) - minority_interest) / equity * 100
+
+
 @dataclass
 class ScreenResult:
     """1銘柄の安さ足切り結果。"""

@@ -4,6 +4,8 @@
 数字の出典は各テストの docstring に書いてある（§8）。
 """
 
+import pytest
+
 from screener import valuation
 from screener.valuation import RoeInput
 
@@ -229,3 +231,57 @@ def test_roe_from_entry_reads_special_items_checked_flag():
     assert valuation.roe_from_entry({"verified_fundamentals": {"roe_pct": 12.0}}).special_items_checked is False
     # normalized_roe_pct があれば当然確認済み
     assert valuation.roe_from_entry({"normalized_roe_pct": 8.0}).special_items_checked is True
+
+
+# --------------------------------------------------------------------------
+# 実効税率の前年比較（2026-08-21 追加。引き継ぎ書§3パターン2＝フィックスターズ型）
+# --------------------------------------------------------------------------
+
+
+def test_tax_rate_drop_is_flagged_as_inflating_roe():
+    # フィックスターズ(3687): 25/9期3Q 19.9% → 26/9期3Q 31.3%。
+    # 「前期のROEが税で嵩上げされていた」形なので、前期側から見ると当期比-11.4pt。
+    check = valuation.TaxRateCheck(current_pct=19.9, previous_pct=31.3)
+    assert check.anomalous
+    assert check.delta_pt == pytest.approx(-11.4, abs=0.01)
+    assert check.conservative_pct == 31.3  # 保守側＝高いほうの税率
+
+
+def test_normal_tax_rate_year_is_not_flagged():
+    check = valuation.TaxRateCheck(current_pct=31.3, previous_pct=29.8)
+    assert not check.anomalous
+
+
+def test_tax_check_without_two_periods_says_so_instead_of_guessing():
+    check = valuation.TaxRateCheck(current_pct=30.0, previous_pct=None)
+    assert check.delta_pt is None
+    assert not check.anomalous
+    assert "前期比較ができない" in check.describe()
+
+
+def test_effective_tax_rate_refuses_a_loss_year():
+    # 税前が0以下の期は率の意味が壊れる。埋めずに None を返すこと（§8）。
+    assert valuation.effective_tax_rate_pct(-100, 30) is None
+    assert valuation.effective_tax_rate_pct(0, 30) is None
+    assert valuation.effective_tax_rate_pct(1000, 300) == pytest.approx(30.0)
+
+
+def test_roe_at_tax_rate_removes_the_tax_benefit():
+    # 税前1,000・自己資本5,000。実効税率20%ならROE16%、正常な30%なら14%。
+    assert valuation.roe_at_tax_rate(
+        pretax_income=1000, equity=5000, tax_rate_pct=20
+    ) == pytest.approx(16.0)
+    assert valuation.roe_at_tax_rate(
+        pretax_income=1000, equity=5000, tax_rate_pct=30
+    ) == pytest.approx(14.0)
+
+
+def test_roe_at_tax_rate_handles_special_items_in_both_directions():
+    # 特別利益200を除き、かつ税率30%で引き直す＝(1000-200)*0.7/5000
+    assert valuation.roe_at_tax_rate(
+        pretax_income=1000, equity=5000, tax_rate_pct=30, special_gains=200
+    ) == pytest.approx(11.2)
+    # 押し下げ側（本社移転費用のような特別損失）は戻すと上がる
+    assert valuation.roe_at_tax_rate(
+        pretax_income=1000, equity=5000, tax_rate_pct=30, special_losses=200
+    ) == pytest.approx(16.8)

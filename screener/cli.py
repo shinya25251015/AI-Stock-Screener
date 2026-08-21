@@ -6,6 +6,9 @@
     # Future100 の watchlist を丸ごと洗い替え
     python -m screener.cli watchlist --refresh
 
+    # ①の原本確認より前に、実績ROEの特別損益を原本で潰す
+    python -m screener.cli special-items 6743 1815
+
     # 監視・保有と重複していないかだけ確認（ネットワーク不要）
     python -m screener.cli leads
 
@@ -20,7 +23,7 @@ import json
 import sys
 
 from . import candidates as candidates_mod
-from . import cost_of_capital, valuation, watchlist, yahoo_jp
+from . import cost_of_capital, disclosure, valuation, watchlist, yahoo_jp
 
 
 def _fmt(value: float | None, digits: int = 2) -> str:
@@ -224,6 +227,86 @@ def cmd_leads(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_special_items(args: argparse.Namespace) -> int:
+    """**①の原本確認より前に置く**実績ROEの特別損益チェックを1コマンドで通す。
+
+    本決算短信の原本を引き当て → PDFを読み → 特別損益を除いた正常化ROEを出す。
+    §14（完全引用ルール）に従い、根拠の行そのものを必ず併記する。
+    """
+    for code in args.codes:
+        ticker = code if "." in code else f"{code}.T"
+        plain = code.split(".")[0]
+        print(f"===== {code}")
+        found, error = disclosure.fetch_disclosures(
+            plain, source=args.source, sleep_sec=args.sleep, ticker=ticker
+        )
+        if error:
+            print(f"  ! 取得エラー: {error}")
+        annual = disclosure.latest_annual_tanshin(found)
+        if annual is None:
+            print("  x 本決算短信が見つからない（四半期しか無い＝取得元の保存期間切れを疑う）")
+            print(f"    参考: 取得できた開示 {len(found)} 件")
+            continue
+        print(f"  原本: {annual.date} {annual.title}")
+        print(f"        {annual.url}（{annual.source}）")
+        if annual.is_ifrs:
+            print("  - IFRS採用会社。特別損益の区分が無いため自動処理しない（原本を人が読む）")
+            continue
+        text, error = disclosure.fetch_tanshin_text(annual.url, sleep_sec=args.sleep)
+        if error:
+            print(f"  x PDFの取得/解釈に失敗: {error}")
+            continue
+        items = disclosure.parse_special_items(text)
+        if items is None or items.is_ifrs:
+            print("  x 短信の連結損益計算書を読み取れなかった（原本を人が読む）")
+            continue
+        if items.missing:
+            print(f"  x 読み取れない項目: {', '.join(items.missing)}（推測で埋めない）")
+            continue
+        equity = items.equity_average
+        actual = ((items.pretax_income - items.tax_total) - items.minority_interest) / equity * 100
+        normalized = valuation.normalized_roe_from_special_items(
+            pretax_income=items.pretax_income,
+            special_gains=items.special_gains,
+            special_losses=items.special_losses,
+            equity=equity,
+            tax_total=items.tax_total,
+            minority_interest=items.minority_interest,
+        )
+        net_special = items.special_gains - items.special_losses
+        print(f"  実績ROE（原本から再現） {actual:6.2f}%")
+        print(f"  正常化ROE             {normalized:6.2f}%  （差 {normalized - actual:+.2f}pt）")
+        print(f"  特別損益の純額         {net_special:+,.0f}{items.unit_label}")
+
+        # 特別損益欄に出ない嵩上げ＝税。フィックスターズ(3687)型（引き継ぎ書§3パターン2）。
+        tax_check = valuation.TaxRateCheck(
+            current_pct=valuation.effective_tax_rate_pct(items.pretax_income, items.tax_total),
+            previous_pct=valuation.effective_tax_rate_pct(
+                items.pretax_income_prev, items.tax_total_prev
+            ),
+        )
+        print(f"  {tax_check.describe()}")
+        conservative = normalized
+        if tax_check.anomalous and tax_check.conservative_pct is not None:
+            conservative = valuation.roe_at_tax_rate(
+                pretax_income=items.pretax_income,
+                equity=equity,
+                tax_rate_pct=tax_check.conservative_pct,
+                special_gains=items.special_gains,
+                special_losses=items.special_losses,
+                minority_interest=items.minority_interest,
+            )
+            print(f"  保守側ROE（前期の税率で引き直し） {conservative:6.2f}%")
+
+        floor = valuation.QUALITY_FLOOR_ROE_PCT
+        if min(normalized, conservative) < floor <= actual:
+            print("  ★ 実績はフロア通過だが正常化で割れる＝日本カーボン/大同信号と同型。①へ進まない")
+        print("  根拠（原本の行）:")
+        for line in items.evidence:
+            print(f"    > {line}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="screener", description="2035 Future 発掘・監視エンジン")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -257,6 +340,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_leads = sub.add_parser("leads", help="未検証リードと理由（YAMLコメント）を表示")
     p_leads.add_argument("--path", default=None, help="watchlist.yaml のパス")
     p_leads.set_defaults(func=cmd_leads)
+
+    p_special = sub.add_parser(
+        "special-items",
+        help="本決算短信の原本から実績ROEの特別損益をチェックし正常化ROEを出す（①より前に実行）",
+    )
+    p_special.add_argument("codes", nargs="+", help="例: 6743 1815 1869.N")
+    p_special.add_argument(
+        "--source", default="both", choices=("both", "yahoo", "kabupro"),
+        help="開示一覧の取得元。yahooは直近1年・kabuproは数年ぶん（既定 both）",
+    )
+    p_special.add_argument(
+        "--sleep", type=float, default=disclosure.DEFAULT_SLEEP_SEC,
+        help="取得ごとのスリープ秒（レート制限対策）",
+    )
+    p_special.set_defaults(func=cmd_special_items)
 
     return parser
 
