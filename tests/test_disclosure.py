@@ -203,3 +203,25 @@ def test_effective_tax_rate_is_stable_for_shobond(shobond):
     assert check.current_pct == pytest.approx(31.28, abs=0.02)
     assert check.previous_pct == pytest.approx(31.03, abs=0.02)
     assert not check.anomalous
+
+
+def test_non_consolidated_tanshin_uses_a_different_pretax_label():
+    # 非連結（個別）の短信は「税引前当期純利益」。連結の「税金等調整前当期純利益」を
+    # 前提にすると読めない（第一建設工業1799が非連結で実例）。
+    # IFRSの「税引前利益」とは別物なので、IFRS扱いに落としてもいけない。
+    text = (
+        "（参考）自己資本 2026年３月期 74,702百万円 2025年３月期 71,657百万円\n"
+        "(単位：千円)\n"
+        "経常利益 7,604,601 7,508,553\n"
+        "特別利益合計 3,822 7,069\n"
+        "特別損失合計 69,188 30,187\n"
+        "税引前当期純利益 7,539,235 7,485,435\n"
+        "法人税等合計 2,296,522 2,261,536\n"
+    )
+    items = disclosure.parse_special_items(text)
+    assert items is not None
+    assert not items.is_ifrs
+    assert items.pretax_income == 7_485_435
+    assert items.complete
+    net = items.pretax_income - items.tax_total
+    assert net / items.equity_average * 100 == pytest.approx(7.14, abs=0.02)

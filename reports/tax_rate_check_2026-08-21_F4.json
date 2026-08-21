@@ -1,0 +1,65 @@
+{
+  "1414": {
+    "prev": 31.03,
+    "cur": 31.28,
+    "delta": 0.25,
+    "anomalous": false,
+    "roe_at_prev_rate": null
+  },
+  "3038": {
+    "prev": 31.74,
+    "cur": 31.62,
+    "delta": -0.12,
+    "anomalous": false,
+    "roe_at_prev_rate": null
+  },
+  "3762": {
+    "prev": 29.83,
+    "cur": 27.88,
+    "delta": -1.95,
+    "anomalous": false,
+    "roe_at_prev_rate": null
+  },
+  "3769": {
+    "prev": 30.07,
+    "cur": 29.37,
+    "delta": -0.7,
+    "anomalous": false,
+    "roe_at_prev_rate": null
+  },
+  "3778": {
+    "prev": 25.78,
+    "cur": 3.9,
+    "delta": -21.88,
+    "anomalous": true,
+    "roe_at_prev_rate": 0.2
+  },
+  "4413": {
+    "prev": 26.89,
+    "cur": 27.11,
+    "delta": 0.21,
+    "anomalous": false,
+    "roe_at_prev_rate": null
+  },
+  "4417": {
+    "prev": 34.41,
+    "cur": 32.74,
+    "delta": -1.67,
+    "anomalous": false,
+    "roe_at_prev_rate": null
+  },
+  "4483": {
+    "prev": 30.35,
+    "cur": 31.63,
+    "delta": 1.28,
+    "anomalous": false,
+    "roe_at_prev_rate": null
+  },
+  "6544": {
+    "prev": 32.09,
+    "cur": 30.89,
+    "delta": -1.2,
+    "anomalous": false,
+    "roe_at_prev_rate": null
+  }
+}

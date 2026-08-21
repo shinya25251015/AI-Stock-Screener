@@ -282,11 +282,15 @@ def fetch_tanshin_text(url: str, *, sleep_sec: float = DEFAULT_SLEEP_SEC) -> tup
 _NUM = r"[△▲\-]?[\d,]+"
 
 #: 「ラベル 前期 当期」の並び。短信の連結P/Lは左が前期・右が当期。
+#: 税前利益のラベルは連結と非連結で違う——連結は「税金等調整前当期純利益」、
+#: **非連結（個別）の短信は「税引前当期純利益」**（第一建設工業1799が非連結で実例）。
+#: IFRSの「税引前利益」とは別物なので取り違えない。
+_PRETAX_LABELS = ("税金等調整前当期純利益", "税引前当期純利益")
 _PL_LABELS = {
-    "pretax_income": "税金等調整前当期純利益",
-    "special_gains": "特別利益合計",
-    "special_losses": "特別損失合計",
-    "tax_total": "法人税等合計",
+    "pretax_income": _PRETAX_LABELS,
+    "special_gains": ("特別利益合計",),
+    "special_losses": ("特別損失合計",),
+    "tax_total": ("法人税等合計",),
 }
 #: 前期の値も保持するフィールド（実効税率の前年比較に要る）。
 _PREV_FIELDS = ("pretax_income", "tax_total", "special_gains", "special_losses")
@@ -318,10 +322,11 @@ def _numbers_in(fragment: str) -> list[float]:
     return [v for v in (_to_number(t) for t in re.findall(_NUM, fragment)) if v is not None]
 
 
-def _table_values(lines: list[str], label: str) -> tuple[int, list[float]] | None:
-    """連結損益計算書の**表の行**から「前期 当期」を拾う。文章の行は採らない。"""
+def _table_values(lines: list[str], labels: tuple[str, ...]) -> tuple[int, list[float]] | None:
+    """損益計算書の**表の行**から「前期 当期」を拾う。文章の行は採らない。"""
     for i, line in enumerate(lines):
-        if label not in line:
+        label = next((l for l in labels if l in line), None)
+        if label is None:
             continue
         tail = re.sub(r"※\s*\d*", " ", line.split(label, 1)[1])
         if not _ONLY_NUMBERS_RE.match(tail):
@@ -367,7 +372,7 @@ def parse_special_items(text: str) -> SpecialItems | None:
     Returns:
         `SpecialItems`。テキストが短信に見えないときは None。
     """
-    if "税金等調整前当期純利益" not in text:
+    if not any(label in text for label in _PRETAX_LABELS):
         if "税引前利益" in text or "その他の収益" in text:
             return SpecialItems(is_ifrs=True, missing=["JGAAPの特別損益区分なし（IFRS）"])
         return None
@@ -376,8 +381,8 @@ def parse_special_items(text: str) -> SpecialItems | None:
     items = SpecialItems()
 
     anchor = len(lines)
-    for field_name, label in _PL_LABELS.items():
-        hit = _table_values(lines, label)
+    for field_name, labels in _PL_LABELS.items():
+        hit = _table_values(lines, labels)
         if hit is None:
             if field_name in ("special_gains", "special_losses"):
                 continue  # その期に区分が無いだけ。0のままにする
@@ -391,7 +396,7 @@ def parse_special_items(text: str) -> SpecialItems | None:
         if field_name == "pretax_income":
             anchor = index
 
-    # 表の単位は、連結P/Lの「税金等調整前当期純利益」の行より前で最後に現れた「単位：X円」。
+    # 表の単位は、P/Lの税前利益の行より前で最後に現れた「単位：X円」。
     for line in lines[:anchor]:
         unit = _UNIT_RE.search(line)
         if unit:
